@@ -287,6 +287,62 @@ async def list_reports(message: Message):
     await message.answer(response, parse_mode="HTML")
 
 # ==========================================
+# سیستم دریافت فایل گزارش‌ها (با قابلیت تعیین تعداد)
+# ==========================================
+@router.message(Command("export"))
+async def export_reports(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    # جدا کردن متن پیام برای پیدا کردن عدد
+    parts = message.text.split()
+    
+    # تعداد پیش‌فرض اگر ادمین عددی وارد نکرد
+    limit = 100 
+    
+    # بررسی اینکه آیا ادمین عددی وارد کرده است یا خیر
+    if len(parts) > 1:
+        if parts[1].isdigit():
+            limit = int(parts[1])
+            if limit <= 0:
+                await message.answer("❌ تعداد گزارش‌ها باید بیشتر از صفر باشد.")
+                return
+        else:
+            await message.answer("❌ <b>فرمت دستور اشتباه است!</b>\n\nلطفاً یک عدد معتبر وارد کنید.\nمثال:\n<code>/export 50</code>", parse_mode="HTML")
+            return
+            
+    # دریافت گزارش‌ها از دیتابیس به تعداد درخواست شده
+    cursor.execute("SELECT * FROM reports ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    
+    if not rows:
+        await message.answer("❌ هیچ گزارشی در دیتابیس یافت نشد.")
+        return
+        
+    total_reports = len(rows)
+    
+    # ساخت محتوای متنی فایل
+    file_content = f"لیست {total_reports} گزارش اخیر شورای صنفی\n"
+    file_content += "=" * 50 + "\n\n"
+    
+    for row in rows:
+        # ساختار ردیف: id(0), user_id(1), username(2), path(3), text(4), created_at(5)
+        file_content += f"🔹 گزارش شماره: {row[0]}\n"
+        file_content += f"🕒 زمان ثبت: {row[5]}\n"
+        file_content += f"👤 فرستنده: {row[2]} (ID: {row[1]})\n"
+        file_content += f"📌 مسیر/موضوع: {row[3]}\n"
+        file_content += f"📝 متن پیام:\n{row[4]}\n"
+        file_content += "-" * 50 + "\n\n"
+        
+    # تبدیل به فایل و ارسال
+    document = BufferedInputFile(file_content.encode('utf-8'), filename=f"last_{total_reports}_reports.txt")
+    
+    caption = (f"📑 <b>فایل خروجی گزارش‌ها</b>\n\n"
+               f"در این فایل، اطلاعات <b>{total_reports} گزارش اخیر</b> به صورت کامل و مرتب قرار داده شده است.")
+               
+    await message.answer_document(document=document, caption=caption, parse_mode="HTML")
+
+# ==========================================
 # سیستم آمار و دریافت لیست کاربران ربات
 # ==========================================
 @router.message(Command("users"))
