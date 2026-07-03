@@ -337,7 +337,8 @@ async def cancel_broadcast(message: Message, state: FSMContext):
 async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     
-    cursor.execute("SELECT user_id FROM users")
+    # اینجا تغییر کرد: حالا هم آیدی عددی و هم یوزرنیم را از دیتابیس می‌گیریم
+    cursor.execute("SELECT user_id, username FROM users")
     users = cursor.fetchall()
     
     if not users:
@@ -350,23 +351,27 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     fail_count = 0
     failed_users = []
     
-    for (u_id,) in users:
+    # حلقه بررسی کاربران هم آپدیت شد
+    for u_id, uname in users:
         try:
             await bot.copy_message(chat_id=u_id, from_chat_id=message.chat.id, message_id=message.message_id)
             success_count += 1
             await asyncio.sleep(0.05) 
         except Exception:
             fail_count += 1
-            failed_users.append(str(u_id))
+            # ذخیره آیدی عددی به همراه یوزرنیم (اگر نداشت می‌نویسد بدون یوزرنیم)
+            display_name = uname if uname else "بدون یوزرنیم"
+            failed_users.append(f"<code>{u_id}</code> ({display_name})")
             
     report_text = (f"✅ <b>گزارش ارسال همگانی:</b>\n\n"
                    f"🟢 موفق: {success_count}\n"
                    f"🔴 ناموفق: {fail_count}")
     
+    # نمایش لیست مسدودکنندگان با فرمت جدید
     if failed_users:
-        report_text += "\n\n🚫 <b>آیدی کاربرانی که ربات را مسدود کرده‌اند:</b>\n"
-        for f_id in failed_users:
-            report_text += f"<code>{f_id}</code>\n"
+        report_text += "\n\n🚫 <b>افرادی که ربات را مسدود کرده‌اند:</b>\n"
+        for user_info in failed_users:
+            report_text += f"▪️ {user_info}\n"
             
     await message.answer(report_text, parse_mode="HTML")
 
