@@ -3,10 +3,11 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta
+import jdatetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, StateFilter, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters.callback_data import CallbackData
@@ -18,6 +19,7 @@ import re
 # ==========================================
 conn = sqlite3.connect('reports_v2.db')
 cursor = conn.cursor()
+
 # جدول گزارش‌ها
 cursor.execute('''CREATE TABLE IF NOT EXISTS reports 
                   (id INTEGER PRIMARY KEY, 
@@ -26,14 +28,20 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS reports
                    path TEXT, 
                    text TEXT, 
                    created_at TEXT)''')
+
 # جدول کاربران (برای ارسال همگانی)
 cursor.execute('''CREATE TABLE IF NOT EXISTS users 
                   (user_id INTEGER PRIMARY KEY)''')
+
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN username TEXT")
+except sqlite3.OperationalError:
+    pass 
+
 conn.commit()
 
-# تابع کمکی برای ثبت نام کاربر در دیتابیس
-def register_user(user_id):
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+def register_user(user_id, username=None):
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
     conn.commit()
 
 # ==========================================
@@ -144,7 +152,8 @@ def get_transport_issues(base_val):
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    register_user(message.from_user.id) # ثبت نام کاربر در دیتابیس
+    username = f"@{message.from_user.username}" if message.from_user.username else None
+    register_user(message.from_user.id, username) 
     await message.answer(f"درود خدمت {message.from_user.first_name} عزیز، به ربات گزارش‌دهی شورای صنفی دانشکده داروسازی شیراز خوش آمدی.\n\nشما می‌توانید از منوی زیر استفاده کنید یا اگر سوالی دارید همینجا تایپ کنید تا مستقیم با ما در ارتباط باشید:", reply_markup=get_main_menu())
 
 @router.callback_query(ReportCB.filter(F.action == "menu"))
@@ -278,6 +287,38 @@ async def list_reports(message: Message):
     await message.answer(response, parse_mode="HTML")
 
 # ==========================================
+# سیستم آمار و دریافت لیست کاربران ربات
+# ==========================================
+@router.message(Command("users"))
+async def get_users_list(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    cursor.execute("SELECT user_id, username FROM users")
+    users = cursor.fetchall()
+    
+    if not users:
+        await message.answer("❌ هیچ کاربری در دیتابیس یافت نشد.")
+        return
+        
+    total_users = len(users)
+    
+    # ساخت محتوای متنی فایل
+    file_content = f"لیست کاربران ربات شورای صنفی\nتعداد کل: {total_users} نفر\n"
+    file_content += "-" * 30 + "\n"
+    for u_id, uname in users:
+        file_content += f"ID: {u_id} | Username: {uname or 'بدون یوزرنیم'}\n"
+        
+    # تبدیل به فایل و ارسال
+    document = BufferedInputFile(file_content.encode('utf-8'), filename="users_list.txt")
+    
+    caption = (f"📊 <b>آمار کاربران ربات</b>\n\n"
+               f"👥 تعداد کل افرادی که ربات را استارت کرده‌اند: <b>{total_users} نفر</b>\n\n"
+               f"📎 <i>فایل متنی حاوی آیدی و یوزرنیم تمامی اعضا پیوست شد.</i>")
+               
+    await message.answer_document(document=document, caption=caption, parse_mode="HTML")
+
+# ==========================================
 # سیستم ارسال پیام همگانی (Broadcast) مخصوص ادمین
 # ==========================================
 @router.message(Command("broadcast"))
@@ -307,18 +348,65 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     
     success_count = 0
     fail_count = 0
+    failed_users = []
     
     for (u_id,) in users:
         try:
-            # کپی کردن پیام ادمین برای کاربران (پشتیبانی از همه مدیاها)
             await bot.copy_message(chat_id=u_id, from_chat_id=message.chat.id, message_id=message.message_id)
             success_count += 1
-            # ایجاد تاخیر برای جلوگیری از مسدود شدن توسط تلگرام
             await asyncio.sleep(0.05) 
         except Exception:
             fail_count += 1
+            failed_users.append(str(u_id))
             
-    await message.answer(f"✅ <b>گزارش ارسال همگانی:</b>\n\n🟢 موفق: {success_count}\n🔴 ناموفق (ربات را بلاک کرده‌اند): {fail_count}", parse_mode="HTML")
+    report_text = (f"✅ <b>گزارش ارسال همگانی:</b>\n\n"
+                   f"🟢 موفق: {success_count}\n"
+                   f"🔴 ناموفق: {fail_count}")
+    
+    if failed_users:
+        report_text += "\n\n🚫 <b>آیدی کاربرانی که ربات را مسدود کرده‌اند:</b>\n"
+        for f_id in failed_users:
+            report_text += f"<code>{f_id}</code>\n"
+            
+    await message.answer(report_text, parse_mode="HTML")
+
+# ==========================================
+# سیستم ارسال پیام مستقیم (با آیدی عددی یا یوزرنیم)
+# ==========================================
+@router.message(Command("send"))
+async def send_direct_message(message: Message, bot: Bot):
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    parts = message.text.split(" ", 2)
+    
+    if len(parts) < 3:
+        await message.answer("❌ <b>راهنمای استفاده نادرست!</b>\n\nلطفاً به این شکل عمل کنید:\n<code>/send [آیدی_عددی یا یوزرنیم] [متن پیام]</code>\n\nمثال ۱:\n<code>/send 123456789 سلام</code>\nمثال ۲:\n<code>/send @username سلام</code>", parse_mode="HTML")
+        return
+        
+    target = parts[1]
+    text_to_send = parts[2]
+    target_id = None
+    
+    if target.isdigit():
+        target_id = target
+    elif target.startswith("@"):
+        cursor.execute("SELECT user_id FROM users WHERE username = ? COLLATE NOCASE", (target,))
+        row = cursor.fetchone()
+        if row:
+            target_id = row[0]
+        else:
+            await message.answer(f"❌ کاربری با یوزرنیم {target} در دیتابیس ربات پیدا نشد!\n(این دانشجو یا یوزرنیم ندارد و یا هنوز ربات را استارت نزده است).")
+            return
+    else:
+        await message.answer("❌ فرمت گیرنده اشتباه است. باید یا عدد باشد یا با @ شروع شود.")
+        return
+        
+    try:
+        await bot.send_message(target_id, f"💬 <b>پیام مستقیم از طرف شورای صنفی:</b>\n\n{text_to_send}", parse_mode="HTML")
+        await message.answer(f"✅ پیام شما با موفقیت به <code>{target}</code> ارسال شد.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ <b>خطا در ارسال پیام!</b>\nممکن است کاربر ربات را بلاک کرده باشد.\nجزئیات: {e}", parse_mode="HTML")
 
 # ==========================================
 # سیستم ریپلای ادمین (پشتیبانی از عکس و ویدیو)
@@ -349,7 +437,8 @@ async def admin_reply(message: Message, bot: Bot):
 # ==========================================
 @router.message(StateFilter(None), F.chat.id != ADMIN_ID)
 async def process_free_chat(message: Message, bot: Bot):
-    register_user(message.from_user.id) # اطمینان از ثبت کاربر
+    username = f"@{message.from_user.username}" if message.from_user.username else None
+    register_user(message.from_user.id, username) 
     user = message.from_user
     user_name = f"@{user.username}" if user.username else user.first_name
     text = message.text or message.caption or "[بدون توضیحات متنی]"
@@ -374,8 +463,11 @@ async def finalize_and_send_report(msg_query, state, bot, is_callback=False, ori
     report_text = data.get("report_text", "[بدون توضیحات اضافی]")
     user = msg_query.from_user if not is_callback else msg_query.chat
     
+    # تنظیم زمان به وقت ایران و تبدیل به شمسی
     iran_time = datetime.utcnow() + timedelta(hours=3, minutes=30)
-    time_str = iran_time.strftime("%Y/%m/%d - %H:%M")
+    jalali_time = jdatetime.datetime.fromgregorian(datetime=iran_time)
+    time_str = jalali_time.strftime("%Y/%m/%d - %H:%M")
+    
     username_str = f"@{user.username}" if user.username else user.first_name
     
     cursor.execute("INSERT INTO reports (user_id, username, path, text, created_at) VALUES (?, ?, ?, ?, ?)", 
