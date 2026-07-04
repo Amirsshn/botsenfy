@@ -154,7 +154,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     username = f"@{message.from_user.username}" if message.from_user.username else None
     register_user(message.from_user.id, username) 
-    await message.answer(f"درود خدمت {message.from_user.first_name} عزیز، به ربات گزارش‌دهی شورای صنفی دانشکده داروسازی شیراز خوش آمدی.\n\ می‌تونی از منوی زیر استفاده کنی یا اگر سوالی داری همینجا تایپ کنی تا مستقیم با ما در ارتباط باشی:", reply_markup=get_main_menu())
+    await message.answer(f"درود خدمت {message.from_user.first_name} عزیز، به ربات گزارش‌دهی شورای صنفی دانشکده داروسازی شیراز خوش آمدی.\n\n می‌تونی از منوی زیر استفاده کنی یا اگر سوالی داری همینجا تایپ کنی تا مستقیم با ما در ارتباط باشی:", reply_markup=get_main_menu())
 
 @router.callback_query(ReportCB.filter(F.action == "menu"))
 async def handle_menus(query: CallbackQuery, callback_data: ReportCB, state: FSMContext):
